@@ -226,6 +226,74 @@ function validateMetadata(raw: unknown): LolaTerrainMetadata {
   return metadata;
 }
 
+
+export function decodeLolaTerrain(
+  rawMetadata: unknown,
+  bytes: Uint8Array
+): LolaTerrainData {
+  const metadata = validateMetadata(rawMetadata);
+
+  const expectedPixels = metadata.width * metadata.height;
+  const expectedBytes =
+    expectedPixels * Float32Array.BYTES_PER_ELEMENT;
+
+  if (
+    !Number.isSafeInteger(expectedPixels) ||
+    bytes.byteLength !== expectedBytes
+  ) {
+    throw new Error(
+      `LOLA raster size mismatch. Expected ${expectedBytes} bytes, received ${bytes.byteLength}.`
+    );
+  }
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength
+  );
+
+  const elevations = new Float32Array(expectedPixels);
+
+  let actualMin = Infinity;
+  let actualMax = -Infinity;
+
+  for (let index = 0; index < expectedPixels; index++) {
+    const elevation = view.getFloat32(index * 4, true);
+
+    if (!Number.isFinite(elevation)) {
+      throw new Error(
+        `Invalid elevation at binary index ${index}.`
+      );
+    }
+
+    elevations[index] = elevation;
+
+    actualMin = Math.min(actualMin, elevation);
+    actualMax = Math.max(actualMax, elevation);
+  }
+
+  if (
+    actualMin < metadata.minElevation - 0.01 ||
+    actualMax > metadata.maxElevation + 0.01
+  ) {
+    throw new Error(
+      "Actual raster elevation values fall outside the metadata range."
+    );
+  }
+
+  return {
+    width: metadata.width,
+    height: metadata.height,
+    minElevation: metadata.minElevation,
+    maxElevation: metadata.maxElevation,
+    resolutionMeters: metadata.resolutionMeters,
+    metadata,
+    elevations,
+  };
+}
+
+
+
 export async function loadLolaTerrain(): Promise<LolaTerrainData> {
   if (terrainPromise) return terrainPromise;
 
@@ -238,27 +306,59 @@ export async function loadLolaTerrain(): Promise<LolaTerrainData> {
     ]);
 
     if (!metadataResponse.ok) {
-      throw new Error(`Metadata HTTP error: ${metadataResponse.status}`);
-    }
-
-    if (!elevationResponse.ok) {
-      throw new Error(`Elevation HTTP error: ${elevationResponse.status}`);
-    }
-
-    const rawMetadata: unknown = await metadataResponse.json();
-    const metadata = validateMetadata(rawMetadata);
-
-    const buffer = await elevationResponse.arrayBuffer();
-
-    const expectedPixels = metadata.width * metadata.height;
-    const expectedBytes = expectedPixels * Float32Array.BYTES_PER_ELEMENT;
-
-    if (buffer.byteLength !== expectedBytes) {
       throw new Error(
-        `Expected ${expectedBytes} bytes, received ${buffer.byteLength}.`
+        `Metadata HTTP error: ${metadataResponse.status}`
       );
     }
 
+    if (!elevationResponse.ok) {
+      throw new Error(
+        `Elevation HTTP error: ${elevationResponse.status}`
+      );
+    }
+
+    // Validate metadata before using its dimensions.
+    const rawMetadata: unknown = await metadataResponse.json();
+    const metadata = validateMetadata(rawMetadata);
+
+    if (
+      !Number.isSafeInteger(metadata.width) ||
+      !Number.isSafeInteger(metadata.height) ||
+      metadata.width <= 0 ||
+      metadata.height <= 0
+    ) {
+      throw new Error(
+        `Invalid terrain dimensions: ${metadata.width} x ${metadata.height}.`
+      );
+    }
+
+    const expectedPixels = metadata.width * metadata.height;
+
+    if (!Number.isSafeInteger(expectedPixels)) {
+      throw new Error(
+        "Terrain dimensions exceed the maximum safe pixel count."
+      );
+    }
+
+    const bytesPerElevation = Float32Array.BYTES_PER_ELEMENT;
+    const expectedBytes = expectedPixels * bytesPerElevation;
+
+    if (!Number.isSafeInteger(expectedBytes)) {
+      throw new Error(
+        "Expected terrain binary size exceeds the maximum safe integer."
+      );
+    }
+
+    // Download the elevation raster.
+    const buffer = await elevationResponse.arrayBuffer();
+
+    if (buffer.byteLength !== expectedBytes) {
+      throw new Error(
+        `Invalid elevation binary size. Expected ${expectedBytes} bytes, received ${buffer.byteLength}.`
+      );
+    }
+
+    // Decode Float32 values explicitly as little-endian.
     const elevations = new Float32Array(expectedPixels);
     const view = new DataView(buffer);
 
@@ -266,19 +366,30 @@ export async function loadLolaTerrain(): Promise<LolaTerrainData> {
     let actualMax = -Infinity;
 
     for (let i = 0; i < expectedPixels; i++) {
-      const elevation = view.getFloat32(i * 4, true);
+      const byteOffset = i * bytesPerElevation;
+      const elevation = view.getFloat32(byteOffset, true);
 
       if (!Number.isFinite(elevation)) {
-        throw new Error(`Invalid elevation at binary index ${i}.`);
+        throw new Error(
+          `Invalid elevation value at binary index ${i}.`
+        );
       }
 
       elevations[i] = elevation;
-      actualMin = Math.min(actualMin, elevation);
-      actualMax = Math.max(actualMax, elevation);
+
+      if (elevation < actualMin) {
+        actualMin = elevation;
+      }
+
+      if (elevation > actualMax) {
+        actualMax = elevation;
+      }
     }
 
     console.info("[LOLA] Terrain loaded:", {
       dimensions: `${metadata.width} x ${metadata.height}`,
+      pixelCount: expectedPixels,
+      binarySizeBytes: buffer.byteLength,
       registration: metadata.coordinateSystem.pixelRegistration,
       actualMin,
       actualMax,
@@ -298,11 +409,15 @@ export async function loadLolaTerrain(): Promise<LolaTerrainData> {
   try {
     return await terrainPromise;
   } catch (error) {
+    // Allow a later request to retry if loading fails.
     terrainPromise = null;
+
     console.error("[LOLA] Loading failed:", error);
+
     throw error;
   }
 }
+
 
 /**
  * Geographic coordinates to South Polar Stereographic.

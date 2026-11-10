@@ -62,8 +62,8 @@ type TerrainVisibility = {
   clearanceDeg: number;
   blockedBySampledTerrain: boolean;
   assessment:
-    | "blocked_by_sampled_terrain"
-    | "above_sampled_terrain_unconfirmed";
+  | "blocked_by_sampled_terrain"
+  | "above_sampled_terrain_unconfirmed";
   terrainCoverageComplete: false;
 };
 
@@ -237,10 +237,10 @@ function parseHorizonsTable(table: string): ParsedObservations {
 
   const rowRegex = new RegExp(
     `^(\\d{4}-[A-Za-z]{3}-\\d{2})\\s+` +
-      `(\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?)\\s+` +
-      `(\\*[A-Za-z]?)?\\s*` +
-      `(${numberPattern})\\s+` +
-      `(${numberPattern})\\s*$`
+    `(\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?)\\s+` +
+    `(\\*[A-Za-z]?)?\\s*` +
+    `(${numberPattern})\\s+` +
+    `(${numberPattern})\\s*$`
   );
 
   for (const line of lines) {
@@ -422,7 +422,7 @@ function getTerrainHorizonAtAzimuth(
     lower.horizonElevationDeg +
     (upper.horizonElevationDeg -
       lower.horizonElevationDeg) *
-      fraction;
+    fraction;
 
   return {
     horizonElevationDeg,
